@@ -90,11 +90,15 @@ void predict(KalmanInput *kf) {
 	copy(&Fx, &kf->x);
 
 	// Update P
-	double FP_[kf->F->rows * kf->P->cols];
+	double FP_[kf->F.rows * kf->P.cols];
 	Matrix FP;
-	createMatrix(kf->F->rows, kf->P->cols, &FP, FP_);
+	createMatrix(kf->F.rows, kf->P.cols, &FP, FP_);
 
-	multiply(kf->F, kf->P, &FP);
+	multiply(&kf->F, &kf->P, &FP);
+}
+
+void update(KalmanInput *kf) {
+	
 }
 
 int main() {
@@ -104,12 +108,17 @@ int main() {
 	};
 
 	double P_[X_DIM * X_DIM] = {
-		1000,    0,
-		0,       1000
+		10,    0,
+		0,     1000
 	};
 
 	double H_[X_DIM] = {
 		1, 0
+	};
+
+	double R_[X_DIM * X_DIM] = {
+		0.5, 0,
+		0, 0
 	};
 
 
@@ -117,6 +126,7 @@ int main() {
 	createMatrix(X_DIM, X_DIM, &kf.F, F_);
 	createMatrix(X_DIM, X_DIM, &kf.P, P_);
 	createMatrix(1, X_DIM, &kf.H, H_);
+	createMatrix(X_DIM, X_DIM, &kf.R, R_);
 
         
 
