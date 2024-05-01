@@ -16,12 +16,12 @@ typedef struct {
 } Matrix;
 
 typedef struct {
-	Matrix P;
-	Matrix R;
-	Matrix Q;
-	Matrix F;
-	Matrix H;
-	Matrix x;
+	Matrix P; //Control input
+	Matrix R; //Observation cov
+	Matrix Q; //Process cov
+	Matrix F; //State transition
+	Matrix H; //Observation
+	Matrix x; //current state
 } KalmanInput;
 
 /**
@@ -56,6 +56,42 @@ void multiply(Matrix *A, Matrix *B, Matrix *result) {
 		}
 	}
 	
+}
+
+void add(Matrix *A, Matrix *B, Matrix *result) {
+    uint8_t r = A->rows;
+	uint8_t c = A->cols;
+    uint8_t i, j = 0;
+    for (i = 0; i < r; i++) {
+		for (j = 0; j < c; j++) {         
+			M(result, i, j) = M(A, i, j) + M(B, i, j);
+		}
+	}
+}
+
+void transpose(Matrix *A, Matrix *result) {
+    uint8_t r = A->rows;
+	uint8_t c = A->cols;
+    uint8_t i, j = 0;
+    for (i = 0; i < r; i++) {
+		for (j = 0; j < c; j++) {         
+			M(result, j, i) = M(A, i, j);
+		}
+	}
+}
+
+void twoDimInverse(Matrix *A, Matrix *result) {
+    uint8_t a = M(A, 0, 0);
+    uint8_t b = M(A, 0, 1);
+    uint8_t c = M(A, 1, 0);
+    uint8_t d = M(A, 1, 1);
+    
+    double det = a*d - b*c;
+    
+    M(result, 0, 0) = d/det;
+    M(result, 0, 1) = (-b)/det;
+    M(result, 1, 0) = (-c)/det;
+    M(result, 1, 1) = a/det;
 }
 
 void copy(Matrix *src, Matrix *dst) {
@@ -95,6 +131,21 @@ void predict(KalmanInput *kf) {
 	createMatrix(kf->F.rows, kf->P.cols, &FP, FP_);
 
 	multiply(&kf->F, &kf->P, &FP);
+    
+    //Create F^T (F Transpose)
+    double Ft_[kf->F.cols * kf->F.rows];
+    Matrix Ft;
+    createMatrix(kf->F.cols, kf->F.rows, &Ft, Ft_);
+    transpose(&kf->F, &Ft);
+    
+    //Multiply FP by F^T
+    double FPFt_[FP.rows * Ft.cols];
+    Matrix FPFt;
+    createMatrix(FP.rows, Ft.cols, &FPFt, FPFt_);
+    multiply(&FP, &Ft, &FPFt);
+    
+    //Add Q and update P
+    add(&FPFt, &kf->Q, &kf->P);
 }
 
 void update(KalmanInput *kf) {
