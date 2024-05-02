@@ -25,7 +25,7 @@
 #include <fcntl.h>
 #include <math.h>
 
-#include "kalmanFilter.c"
+#include "kf.h"
 
 #define SIG_SAMPLE SIGRTMIN
 #define SIG_HZ 1
@@ -38,20 +38,6 @@
 	"\t -n: plot noisy signal\n"		\
 	"\t -n: plot filtered signal\n"		\
 	""
-	
-// 2nd-order Butterw. filter, cutoff at 2Hz @ fc = 50Hz
-#if 1
-#define BUTTERFILT_ORD 2
-double b [3] = {0.0134,    0.0267,    0.0134};
-double a [3] = {1.0000,   -1.6475,    0.7009};
-#endif
-
-// 4th-order Butterw. filter, cutoff at 2Hz @ fc = 50Hz
-#if 0
-#define BUTTERFILT_ORD 4
-double b [5] = {0.0002, 0.0007, 0.0011, 0.0007, 0.0002};
-double a [5] = {1.0000, -3.3441, 4.2389, -2.4093, 0.5175};
-#endif
 
 void handle_my_signal(int signo, siginfo_t * info, void * extra);
 double get_butter(double cur, double * a, double * b);
@@ -62,9 +48,39 @@ int flag_signal = 0;
 int flag_noise = 0;
 int flag_filtered = 0;
 
+/* Kalman filter parameters */
+double F_[2 * 2] = {
+	1, 1,
+	0, 1
+};
+double P_[2 * 2] = {
+	1000,    0,
+	0,     1000
+};
+double R_[1] = {
+	10
+};
+double Q_[2 * 2] = {
+	0.0125, 0.025,
+	0.025, 0.05
+};
+double x_[2] = {
+	0,
+	0
+};
+KalmanInput2D kf;
+
+
 int main(int argc, char ** argv)
 {
-	printf("Starting signal filtering demo\n");
+	createMatrix(2, 2, &kf.F, F_);
+	createMatrix(2, 2, &kf.P, P_);
+	createMatrix(1, 1, &kf.R, R_);
+	createMatrix(2, 2, &kf.Q, Q_);
+	createMatrix(2, 1, &kf.x, x_);
+
+
+	printf("Starting kalman filtering demo\n");
 	struct sigaction sa;
 	sigset_t mask, wait_mask;
 	struct sigevent ev;
@@ -77,7 +93,6 @@ int main(int argc, char ** argv)
 	double t_sample = (1.0/f_sample) * 1000 * 1000 * 1000; /* Sampling period in ns */
 
 	parse_cmdline(argc, argv);
-	printf("Command line parsed\n");
 	outfile = open(OUTFILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 	outfd = fdopen(outfile, "w");
 	
@@ -86,7 +101,6 @@ int main(int argc, char ** argv)
 		perror("Unable to open/create output file. Exiting.");
 		return EXIT_FAILURE;
 	}
-	printf("Output file opened\n");
 
 	sa.sa_flags = SA_SIGINFO;
 	
@@ -123,14 +137,11 @@ int main(int argc, char ** argv)
 	it.it_interval.tv_sec = 0;
 	it.it_interval.tv_nsec = t_sample;
 	
-	int err = 0;
-	if (err = timer_settime(timer, 0, &it, NULL)) {
-		perror("Unable to set timer. Exiting.");
-		printf("err: %d\n", err);
+	
+	if (timer_settime(timer, 0, &it, NULL)) {
 		return EXIT_FAILURE;
 	}
 	
-	printf("Timer started\n");
 	while (1) {
 	    sigsuspend(&wait_mask);	    
 	}
@@ -147,19 +158,28 @@ void handle_my_signal(int signo, siginfo_t * info, void * extra)
 	(void)info;
 	(void)signo;
 	
-	double sig_val = sin(2*M_PI*SIG_HZ*glob_time);
+	// Seed the random number generator
+    // srand(time(NULL));
+    // Generate a random double between -1 and 1
+    //double randomValue = -1 + (double)rand() / ((double)RAND_MAX / 2);
+	//sig_val += randomValue;
 
+	double sig_val = 1*sin(2*M_PI*SIG_HZ*glob_time);
 	double sig_noise = sig_val + 0.5*cos(2*M_PI*10*glob_time);
-	sig_noise += 0.9*cos(2*M_PI*4*glob_time);
-	sig_noise += 0.9*cos(2*M_PI*12*glob_time);
-	sig_noise += 0.8*cos(2*M_PI*15*glob_time);
-	sig_noise += 0.7*cos(2*M_PI*18*glob_time);
+	sig_noise += 0.1*cos(2*M_PI*4*glob_time);
+	sig_noise += 0.5*cos(2*M_PI*12*glob_time);
+	sig_noise += 0.3*cos(2*M_PI*15*glob_time);
+	sig_noise += 0.2*cos(2*M_PI*18*glob_time);
 
-	double sig_filt = get_butter(sig_noise, a, b);
-	double z[2] = {sig_noise, sig_noise};
-	double ret[2] = {0, 0};
-	update(z, ret);
-	//double sig_filt = ret[0];
+	// if (glob_time > 5) {
+	// 	sig_noise += glob_time;
+	// }
+	
+
+	//double sig_filt = get_butter(sig_noise, a, b);
+	predict(&kf);
+	update(&kf, sig_noise);
+	double sig_filt = M(&kf.x, 0, 0);
 
 	fprintf(outfd, "%lf,", glob_time);
 
@@ -184,33 +204,6 @@ void handle_my_signal(int signo, siginfo_t * info, void * extra)
 
 	glob_time += (1.0/F_SAMPLE); /* Sampling period in s */
 	
-}
-
-double get_butter(double cur, double * a, double * b)
-{
-	double retval;
-	int i;
-
-	static double in[BUTTERFILT_ORD+1];
-	static double out[BUTTERFILT_ORD+1];
-	
-	// Perform sample shift
-	for (i = BUTTERFILT_ORD; i > 0; --i) {
-		in[i] = in[i-1];
-		out[i] = out[i-1];
-	}
-	in[0] = cur;
-
-	// Compute filtered value
-	retval = 0;
-	for (i = 0; i < BUTTERFILT_ORD+1; ++i) {
-		retval += in[i] * b[i];
-		if (i > 0)
-			retval -= out[i] * a[i];
-	}
-	out[0] = retval;
-
-	return retval;
 }
 
 void parse_cmdline(int argc, char ** argv)
